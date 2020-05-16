@@ -1,0 +1,8 @@
+
+X Ask the user to specify a range of values at the outset.
+- Ask what distributions should be under consideration at the outset?
+- Don't be in a situation where asking the same question again would give you more information.
+  - Why does this happen?
+- Ask smarter questions:
+  - Don't ask the same questions over again.
+  - Employ a heuristic for what to ask based on interval questions asked before?
