@@ -4,7 +4,7 @@ What distribution am I thinking of? 20 questions for distributions.
 from dataclasses import dataclass, field
 import math
 import random
-from typing import List, Tuple
+from typing import *
 
 import jax
 import jax.numpy as jnp
@@ -13,12 +13,12 @@ import numpyro.distributions as dist
 import matplotlib.pyplot as plt
 
 class Normal(dist.Normal):
-    def __str__(self):
+    def __repr__(self):
         return f"Normal({self.loc}, {self.scale})"
 
 
 class Uniform(dist.Uniform):
-    def __str__(self):
+    def __repr__(self):
         return f"Uniform({self.low}, {self.high})"
 
 
@@ -67,7 +67,10 @@ class IntervalQuestion(Question):
     def log_prob(self, rng_key, distribution: dist.Distribution, answer: str):
         true_frac = self.true_frac(rng_key, distribution)
         reported_frac = float(answer)
-        print(f"Distribution {distribution}, true_frac {true_frac}, reported_frac {reported_frac}")
+
+        # For debugging.
+        # print(f"Distribution {distribution}, true_frac {true_frac}, reported_frac {reported_frac}")
+        
         return -(true_frac - reported_frac) ** 2
 
     def __eq__(self, other):
@@ -91,7 +94,7 @@ class HyperDistribution:
             new_weights = index_update(new_weights, i, weight * prob)
         
         new_weights = new_weights / sum(new_weights)
-        return HyperDistribution(self.low, self.high, list(zip(self.distributions(), list(new_weights))))
+        return HyperDistribution(self.low, self.high, list(zip(self.distributions(), new_weights)))
 
     def sample(self, rng_key):
         i = dist.Categorical(jnp.array(self.weights())).sample(key=rng_key)
@@ -122,7 +125,7 @@ class HyperDistribution:
         
         return (xs, ys)
 
-    def __str__(self):
+    def __repr__(self):
         return str(self.weights())
 
 
@@ -175,46 +178,38 @@ class State:
 
         self.hyper_dist = self.hyper_dist.update(self.next_rng_key(), question, answer)
 
-    def __str__(self):
+    def __repr__(self):
         return str(self.hyper_dist)
 
+def step(state, get_answer: Callable[[Question], float]) -> None:
+    question = state.next_question()
+    answer = get_answer(question)
+    state.asked_questions.append(question)
+    state.update(question, answer)
 
-def qa_loop(state):
-    while True:
-        print(f"Distribution weights: {state}")
-        state.plot_current_vs_previous_distributions()
-        print()
-        question = state.next_question()
-        answer = question.ask()
-        state.asked_questions.append(question)
-        state.update(question, answer)
-
-
-def normal_and_uniform(low, high):
-    return [
-        (Uniform(low=low, high=high), 0.5),
-        (Normal(loc=(high-low)/2, scale=1), 0.5),
-    ]
-
-def normals(low, high, granularity=10.0):
-    result = []
+# def normals(low, high, granularity=10.0):
+#     result = []
     
-    step = (high - low) / granularity
-    loc = low
-    while loc <= high:
-        # TODO: Add different scales. How high to push scale?
-        for scale in (1,):
-            result.append(Normal(loc=loc, scale=scale))
-        loc += step
+#     step = (high - low) / granularity
+#     loc = low
+#     while loc <= high:
+#         # TODO: Add different scales. How high to push scale?
+#         for scale in (1,):
+#             result.append(Normal(loc=loc, scale=scale))
+#         loc += step
 
-    return result
+#     return result
 
 if __name__ == "__main__":
     low = 0#int(input("What is the lowest value (integer) you want to consider? "))
     high = 10#int(input("What is the highest value (integer) you want to consider? "))
 
-    distributions_and_weights = normal_and_uniform(low, high)
+    distributions_and_weights = [(Uniform(low=low, high=high), 0.5), (Normal(loc=(high-low)/2, scale=1), 0.5)]
     hyper_dist = HyperDistribution(low, high, distributions_and_weights)
     state = State(hyper_dist)
 
-    qa_loop(state)
+    while True:
+        print(f"Distribution weights: {state}")
+        state.plot_current_vs_previous_distributions()
+        print()
+        step(state, get_answer=lambda question: question.ask())
