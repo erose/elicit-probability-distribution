@@ -1,0 +1,11 @@
+absl-py==0.9.0
+jax==0.1.67
+jaxlib==0.1.47
+numpy==1.18.4
+numpyro==0.2.4
+opt-einsum==3.2.1
+pkg-resources==0.0.0
+protobuf==3.12.0
+scipy==1.4.1
+six==1.14.0
+tqdm==4.46.0
