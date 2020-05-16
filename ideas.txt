@@ -1,8 +1,8 @@
 
-- Ask what distributions should be under consideration at the outset?
 - Ask smarter questions:
-  - Don't ask the same questions over again.
+  - What if we just did expected information gain again? What's wrong with that?
   - Employ a heuristic for what to ask based on interval questions asked before?
+- We could speed up EIG by computing question.true_frac(distribution) for each distribution *once*. Really, just once at the beginning and then we're done.
 - More question types.
 
 *****
@@ -10,3 +10,6 @@
 - Don't be in a situation where asking the same question again would give you more information.
   - Why does this happen?
     * This happens because we don't totally trust the answers. But it feels like we could trust them more?
+
+- Ask what distributions should be under consideration at the outset?
+  * Eh, we can handle this in a variety of ways and it's very separable.

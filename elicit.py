@@ -12,6 +12,8 @@ from jax.ops import index_update
 import numpyro.distributions as dist
 import matplotlib.pyplot as plt
 
+from expected_info_gain import eig
+
 class Normal(dist.Normal):
     def __repr__(self):
         return f"Normal({self.loc}, {self.scale})"
@@ -46,6 +48,9 @@ class SampleQuestion(Question):
     def log_prob(self, rng_key, distribution: dist.Distribution, answer: str):
         return distribution.log_prob(float(answer))
 
+    def sample_answer(self, rng_key, distribution: dist.Distribution):
+        return distribution.sample(key=rng_key)
+
     def __eq__(self, other):
         return type(self) == type(other)
 
@@ -70,8 +75,11 @@ class IntervalQuestion(Question):
 
         # For debugging.
         # print(f"Distribution {distribution}, true_frac {true_frac}, reported_frac {reported_frac}")
-        
+
         return -(true_frac - reported_frac) ** 2
+
+    def sample_answer(self, rng_key, distribution: dist.Distribution):
+        return self.true_frac(rng_key, distribution)
 
     def __eq__(self, other):
         return type(self) == type(other) and self.pivot == other.pivot
@@ -98,7 +106,7 @@ class HyperDistribution:
 
     def sample(self, rng_key):
         i = dist.Categorical(jnp.array(self.weights())).sample(key=rng_key)
-        return self.distributions[i]
+        return self.distributions()[i]
 
     def pdf(self, x: float) -> float:
         weighted_probs = [jnp.exp(d.log_prob(x)) * weight for d, weight in self.distributions_and_weights]
@@ -168,9 +176,16 @@ class State:
         self.previous_hyper_dist_graphs.append((x, y))
         plt.show()
 
-    def next_question(self):
+    def next_question(self) -> Optional[Question]:
+        """
+        Return the question with highest expected information gain.
+        """
         unasked_questions = [q for q in self.questions if q not in self.asked_questions]
-        return random.choice(unasked_questions)
+        if len(unasked_questions) == 0:
+            return None
+
+        max_eig_question = max(unasked_questions, key=lambda q: eig(self.next_rng_key(), self.hyper_dist, q))
+        return max_eig_question
 
     def update(self, question, answer):
         # Save the graph so we can show it later.
@@ -183,29 +198,48 @@ class State:
 
 def step(state, get_answer: Callable[[Question], float]) -> None:
     question = state.next_question()
+    if question is None:
+        print("No more questions to ask!")
+        return
+    
     answer = get_answer(question)
     state.asked_questions.append(question)
     state.update(question, answer)
 
-# def normals(low, high, granularity=10.0):
-#     result = []
-    
-#     step = (high - low) / granularity
-#     loc = low
-#     while loc <= high:
-#         # TODO: Add different scales. How high to push scale?
-#         for scale in (1,):
-#             result.append(Normal(loc=loc, scale=scale))
-#         loc += step
+class Priors:
+    @staticmethod
+    def uniform_vs_normal(low, high):
+        return [
+            (Uniform(low=low, high=high), 0.5),
+            (Normal(loc=(high-low)/2, scale=1), 0.5),
+        ]
 
-#     return result
+    @staticmethod
+    def normals(low, high, granularity=10.0):
+        """
+        Normals with a constant scale.
+        """
+
+        result = []
+        
+        step = (high - low) / granularity
+        n = granularity + 1
+        scale = step
+        
+        loc = low
+        while loc <= high:
+            result.append(
+                (Normal(loc=loc, scale=scale), 1 / n)
+            )
+            loc += step
+
+        return result
 
 if __name__ == "__main__":
-    low = 0#int(input("What is the lowest value (integer) you want to consider? "))
-    high = 10#int(input("What is the highest value (integer) you want to consider? "))
+    low = 0#int(input("What is the lowest value you want to consider? (Round to an integer.)\n"))
+    high = 10#int(input("What is the highest value you want to consider? (Round to an integer.)\n"))
 
-    distributions_and_weights = [(Uniform(low=low, high=high), 0.5), (Normal(loc=(high-low)/2, scale=1), 0.5)]
-    hyper_dist = HyperDistribution(low, high, distributions_and_weights)
+    hyper_dist = HyperDistribution(low, high, Priors.normals(low, high))
     state = State(hyper_dist)
 
     while True:
