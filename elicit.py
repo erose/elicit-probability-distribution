@@ -17,6 +17,11 @@ class Normal(dist.Normal):
         return f"Normal({self.loc}, {self.scale})"
 
 
+class Uniform(dist.Uniform):
+    def __str__(self):
+        return f"Uniform({self.low}, {self.high})"
+
+
 @dataclass
 class Question:
     text: str
@@ -62,7 +67,8 @@ class IntervalQuestion(Question):
     def log_prob(self, rng_key, distribution: dist.Distribution, answer: str):
         true_frac = self.true_frac(rng_key, distribution)
         reported_frac = float(answer)
-        return -10 * ((true_frac - reported_frac) ** 2) # TODO: I added -10 based on no principled reason.
+        print(f"Distribution {distribution}, true_frac {true_frac}, reported_frac {reported_frac}")
+        return -(true_frac - reported_frac) ** 2
 
     def __eq__(self, other):
         return type(self) == type(other) and self.pivot == other.pivot
@@ -74,29 +80,34 @@ class HyperDistribution:
 
     low: float
     high: float
-    distributions: List[dist.Distribution]
-    weights: List[float]
+    distributions_and_weights: List[Tuple[dist.Distribution, float]]
 
     def update(self, rng_key, question: Question, answer: str) -> "HyperDistribution":
-        new_weights = jnp.array(self.weights)
-        for i, (distribution, weight) in enumerate(
-            zip(self.distributions, self.weights)
-        ):
-            prob = jnp.exp(question.log_prob(rng_key, distribution, answer))
+        trust = 5 # A scalar that controls how much we update.
+
+        new_weights = jnp.array(self.weights())
+        for i, (distribution, weight) in enumerate(self.distributions_and_weights):
+            prob = jnp.exp(trust * question.log_prob(rng_key, distribution, answer))
             new_weights = index_update(new_weights, i, weight * prob)
+        
         new_weights = new_weights / sum(new_weights)
-        return HyperDistribution(self.low, self.high, self.distributions, new_weights)
+        return HyperDistribution(self.low, self.high, list(zip(self.distributions(), list(new_weights))))
 
     def sample(self, rng_key):
-        i = dist.Categorical(jnp.array(self.weights)).sample(key=rng_key)
+        i = dist.Categorical(jnp.array(self.weights())).sample(key=rng_key)
         return self.distributions[i]
 
     def pdf(self, x: float) -> float:
-        distributions_and_weights = zip(self.distributions, self.weights)
-        weighted_probs = [jnp.exp(d.log_prob(x)) * weight for d, weight in distributions_and_weights]
+        weighted_probs = [jnp.exp(d.log_prob(x)) * weight for d, weight in self.distributions_and_weights]
         return sum(weighted_probs)
 
-    def pdf_pairs(self) -> Tuple[jnp.array]:
+    def distributions(self):
+        return [distribution for distribution, weight in self.distributions_and_weights]
+
+    def weights(self):
+        return [weight for distribution, weight in self.distributions_and_weights]
+
+    def graph(self) -> Tuple[jnp.array]:
         xs = []
         ys = []
         step = (self.high - self.low) / 100.0
@@ -112,17 +123,19 @@ class HyperDistribution:
         return (xs, ys)
 
     def __str__(self):
-        return str(self.weights)
+        return str(self.weights())
 
 
 class State:
     hyper_dist: HyperDistribution
+    previous_hyper_dist_graphs: List[Tuple]
     questions: List[Question]
     asked_questions: List[Question]
     rng_key: jax.random.PRNGKey
 
     def __init__(self, hyper_dist):
         self.hyper_dist = hyper_dist
+        self.previous_hyper_dist_graphs = []
         self.rng_key = jax.random.PRNGKey(0)
         self.questions = [
             IntervalQuestion(pivot) for pivot in range(hyper_dist.low, hyper_dist.high)
@@ -134,9 +147,22 @@ class State:
         self.rng_key = next_rng_key
         return current_key
 
-    def plot_current_distribution(self):
-        x, y = self.hyper_dist.pdf_pairs()
+    def plot_current_vs_previous_distributions(self):
+        x, y = self.hyper_dist.graph()
         plt.plot(x, y)
+
+        # Plot previous distributions with a progressively lighter opacity, as defined by a starting
+        # point and a delta.
+        base_alpha = 0.15
+        alpha_delta = 5
+        for i, (x, y) in enumerate(reversed(self.previous_hyper_dist_graphs)):
+            alpha = base_alpha - alpha_delta * (0.01 * i)
+            if alpha <= 0:
+                continue # No point in plotting this; it wouldn't be visible.
+
+            plt.plot(x, y, color='red', alpha=alpha)
+
+        self.previous_hyper_dist_graphs.append((x, y))
         plt.show()
 
     def next_question(self):
@@ -144,6 +170,9 @@ class State:
         return random.choice(unasked_questions)
 
     def update(self, question, answer):
+        # Save the graph so we can show it later.
+        self.previous_hyper_dist_graphs.append(self.hyper_dist.graph())
+
         self.hyper_dist = self.hyper_dist.update(self.next_rng_key(), question, answer)
 
     def __str__(self):
@@ -153,7 +182,7 @@ class State:
 def qa_loop(state):
     while True:
         print(f"Distribution weights: {state}")
-        state.plot_current_distribution()
+        state.plot_current_vs_previous_distributions()
         print()
         question = state.next_question()
         answer = question.ask()
@@ -161,11 +190,16 @@ def qa_loop(state):
         state.update(question, answer)
 
 
-def initial_distributions(low, high):
-    result = []
-    step = (high - low) / 10.0
+def normal_and_uniform(low, high):
+    return [
+        (Uniform(low=low, high=high), 0.5),
+        (Normal(loc=(high-low)/2, scale=1), 0.5),
+    ]
 
-    # Add normals.
+def normals(low, high, granularity=10.0):
+    result = []
+    
+    step = (high - low) / granularity
     loc = low
     while loc <= high:
         # TODO: Add different scales. How high to push scale?
@@ -179,9 +213,8 @@ if __name__ == "__main__":
     low = 0#int(input("What is the lowest value (integer) you want to consider? "))
     high = 10#int(input("What is the highest value (integer) you want to consider? "))
 
-    distributions = initial_distributions(low, high)
-    n = len(distributions)
-    hyper_dist = HyperDistribution(low, high, distributions, [1 / n] * n)
+    distributions_and_weights = normal_and_uniform(low, high)
+    hyper_dist = HyperDistribution(low, high, distributions_and_weights)
     state = State(hyper_dist)
 
     qa_loop(state)
