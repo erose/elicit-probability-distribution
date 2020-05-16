@@ -3,6 +3,7 @@ What distribution am I thinking of? 20 questions for distributions.
 """
 from dataclasses import dataclass, field
 import math
+import time # For debugging.
 import random
 from typing import *
 
@@ -63,11 +64,19 @@ class IntervalQuestion(Question):
         super(IntervalQuestion, self).__init__(
             f"How likely is it that the value is < {self.pivot}?"
         )
+        
+        self._memo = {}
 
-    def true_frac(self, rng_key, distribution: dist.Distribution):
+    def calculate_true_frac(self, rng_key, distribution: dist.Distribution):
         num_samples = 100
         samples = distribution.sample(key=rng_key, sample_shape=(num_samples,))
         return jnp.sum(samples < float(self.pivot)) / num_samples
+
+    def true_frac(self, rng_key, distribution: dist.Distribution):
+        if distribution not in self._memo:
+            # 'DEBUG'; print(f"Miss for {self}, {distribution}.")
+            self._memo[distribution] = self.calculate_true_frac(rng_key, distribution)
+        return self._memo[distribution]
 
     def log_prob(self, rng_key, distribution: dist.Distribution, answer: str):
         true_frac = self.true_frac(rng_key, distribution)
@@ -96,13 +105,22 @@ class HyperDistribution:
     def update(self, rng_key, question: Question, answer: str) -> "HyperDistribution":
         trust = 5 # A scalar that controls how much we update.
 
+        # 'DEBUG'; start = time.time()
         new_weights = jnp.array(self.weights())
         for i, (distribution, weight) in enumerate(self.distributions_and_weights):
             prob = jnp.exp(trust * question.log_prob(rng_key, distribution, answer))
+            # 'DEBUG'; print("After prob calculation", time.time() - start)
             new_weights = index_update(new_weights, i, weight * prob)
-        
+            # 'DEBUG'; print("After new_weights", time.time() - start)
+
+        # 'DEBUG'; print()
+        # 'DEBUG'; print("After loop", time.time() - start)
+
         new_weights = new_weights / sum(new_weights)
-        return HyperDistribution(self.low, self.high, list(zip(self.distributions(), new_weights)))
+        new_hyper_distribution = HyperDistribution(self.low, self.high, list(zip(self.distributions(), new_weights)))
+
+        # 'DEBUG'; print("After new_hyper_distribution", time.time() - start)
+        return new_hyper_distribution
 
     def sample(self, rng_key):
         i = dist.Categorical(jnp.array(self.weights())).sample(key=rng_key)
@@ -173,7 +191,6 @@ class State:
 
             plt.plot(x, y, color='red', alpha=alpha)
 
-        self.previous_hyper_dist_graphs.append((x, y))
         plt.show()
 
     def next_question(self) -> Optional[Question]:
@@ -188,22 +205,25 @@ class State:
         return max_eig_question
 
     def update(self, question, answer):
-        # Save the graph so we can show it later.
-        self.previous_hyper_dist_graphs.append(self.hyper_dist.graph())
-
         self.hyper_dist = self.hyper_dist.update(self.next_rng_key(), question, answer)
+
+    def save_graph(self):
+        self.previous_hyper_dist_graphs.append(self.hyper_dist.graph())
 
     def __repr__(self):
         return str(self.hyper_dist)
 
 def step(state, get_answer: Callable[[Question], float]) -> None:
+    'DEBUG'; start = time.time()
     question = state.next_question()
     if question is None:
         print("No more questions to ask!")
         return
+    'DEBUG'; print("next_question took", time.time() - start)
     
     answer = get_answer(question)
     state.asked_questions.append(question)
+    state.save_graph() # For visual comparison.
     state.update(question, answer)
 
 class Priors:
@@ -235,15 +255,19 @@ class Priors:
 
         return result
 
-if __name__ == "__main__":
-    low = 0#int(input("What is the lowest value you want to consider? (Round to an integer.)\n"))
-    high = 10#int(input("What is the highest value you want to consider? (Round to an integer.)\n"))
-
-    hyper_dist = HyperDistribution(low, high, Priors.normals(low, high))
-    state = State(hyper_dist)
-
+def qa_loop(state):
     while True:
         print(f"Distribution weights: {state}")
         state.plot_current_vs_previous_distributions()
         print()
+        
         step(state, get_answer=lambda question: question.ask())
+
+if __name__ == "__main__":
+    low = 0#int(input("What is the lowest value you want to consider? (Round to an integer.)\n"))
+    high = 10#int(input("What is the highest value you want to consider? (Round to an integer.)\n"))
+
+    hyper_dist = HyperDistribution(low, high, Priors.uniform_vs_normal(low, high))
+    state = State(hyper_dist)
+
+    qa_loop(state)
