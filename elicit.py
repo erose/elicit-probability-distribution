@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import math
 import time # For debugging.
 import random
+import collections
 from typing import *
 
 import jax
@@ -12,6 +13,7 @@ import jax.numpy as jnp
 from jax.ops import index_update
 import numpyro.distributions as dist
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from expected_information_gain import expected_information_gain
 
@@ -87,6 +89,7 @@ class IntervalQuestion(Question):
             self._memo[distribution] = self.calculate_true_frac(rng_key, distribution)
         return self._memo[distribution]
 
+
 class InverseIntervalQuestion(Question):
     probability: float
 
@@ -118,6 +121,31 @@ class InverseIntervalQuestion(Question):
         return int(self.probability * 100)
 
 
+class ComparingValuesQuestion(Question):
+    value_1: float
+    value_2: float
+
+    def __init__(self, value_1, value_2):
+        self.value_1 = value_1
+        self.value_2 = value_2
+        super().__init__(
+            f"Value {self.value_1} is ___ times more likely than value {self.value_2}?"
+        )
+
+    def log_prob(self, rng_key, distribution: dist.Distribution, answer: str):
+        # TODO: Not sure why I do the squaring thing here, just copying IntervalQuestion.
+        return -(self.true_ratio(distribution) - float(answer)) ** 2
+
+    def sample_answer(self, rng_key, distribution: dist.Distribution):
+        return self.true_ratio(distribution)
+
+    def true_ratio(self, distribution):
+        value_1_prob = jnp.exp(distribution.log_prob(self.value_1))
+        value_2_prob = jnp.exp(distribution.log_prob(self.value_2))
+        
+        return value_1_prob / value_2_prob
+
+
 @dataclass
 class HyperDistribution:
     # Could just be Categorical; this class doesn't need to know that we're dealing with
@@ -127,12 +155,23 @@ class HyperDistribution:
     high: float
     distributions_and_weights: List[Tuple[dist.Distribution, float]]
 
+    def __init__(self, low, high, distributions_and_weights):
+        self.low = low
+        self.high = high
+        self.distributions_and_weights = distributions_and_weights
+
     def update(self, rng_key, question: Question, answer: str) -> "HyperDistribution":
         trust = 1 # A scalar that controls how much we update.
 
         # 'DEBUG'; start = time.time()
         new_weights = jnp.array(self.weights())
         for i, (distribution, weight) in enumerate(self.distributions_and_weights):
+            # Optimization: if a weight is low enough, it isn't going to be relevant again so just
+            # set it to zero and move on.
+            if weight < 1e-4:
+                new_weights = index_update(new_weights, i, 0)
+                continue
+
             prob = jnp.exp(trust * question.log_prob(rng_key, distribution, answer))
             # 'DEBUG'; print("After prob calculation", time.time() - start)
             new_weights = index_update(new_weights, i, weight * prob)
@@ -190,13 +229,33 @@ class State:
     hyper_dist: HyperDistribution
     previous_hyper_dist_graphs: List[Tuple]
     questions: List[Question]
+    answers_to_questions: Dict[Question, List[float]]
     rng_key: jax.random.PRNGKey
+    num_steps: int
 
     def __init__(self, hyper_dist, questions):
         self.hyper_dist = hyper_dist
         self.previous_hyper_dist_graphs = []
         self.rng_key = jax.random.PRNGKey(0)
         self.questions = questions
+        self.answers_to_questions = collections.defaultdict(list)
+        self.num_steps = 0
+
+    def step(self, get_answer: Callable[[Question], float]) -> None:
+        'DEBUG'; start = time.time()
+        question = self.next_question()
+        'DEBUG'; print("next_question took", time.time() - start)
+        
+        if question is None:
+            print("No more questions to ask!")
+            return
+        else:
+            answer = get_answer(question)
+        
+        self.save_graph() # For visual comparison.
+        self.update(question, answer)
+
+        self.num_steps += 1
 
     def next_rng_key(self):
         current_key, next_rng_key = jax.random.split(self.rng_key, 2)
@@ -226,47 +285,49 @@ class State:
         # from the pool of all questions, using heuristics.
         candidates = []
 
+        # TODO: testing.
         interval_questions = [q for q in self.questions if isinstance(q, IntervalQuestion)]
         candidates.extend(interval_questions)
+
+        # TODO: testing.
+        comparing_values_questions = [q for q in self.questions if isinstance(q, ComparingValuesQuestion)]
+        candidates.extend(comparing_values_questions)
 
         # TODO: testing
         inverse_interval_questions = [q for q in self.questions if isinstance(q, InverseIntervalQuestion)]
         candidates.extend(inverse_interval_questions)
 
-        # Allow all SampleQuestions through. (There should only be one.)
-        candidates.extend([q for q in self.questions if isinstance(q, SampleQuestion)])
+        # TODO: testing.
+        sample_questions = [q for q in self.questions if isinstance(q, SampleQuestion)]
+        candidates.extend(sample_questions)
+
+        # Filter out questions we've already asked more than once.
+        candidates = [q for q in candidates if len(self.answers_to_questions[q]) < 2]
 
         # Of the candidates, return the question with highest expected information gain.
         candidates_to_eigs = {}
-        for question in candidates:
-            eig = expected_information_gain(self.next_rng_key(), self.hyper_dist, question)
+        for question in tqdm(candidates):
+            previous_answers = self.answers_to_questions[question]
+            eig = expected_information_gain(self.next_rng_key(), self.hyper_dist, question, previous_answers)
             candidates_to_eigs[question] = eig
-            'DEBUG'; print(question, eig)
+            # 'DEBUG'; print(question, eig)
 
         maximum_eig_question = max(candidates, key=lambda q: candidates_to_eigs[q])
-        'DEBUG'; print("Chosen is", maximum_eig_question)
+        # 'DEBUG'; print("Chosen is", maximum_eig_question)
+        # 'DEBUG'; print("Expected information gain is", candidates_to_eigs[maximum_eig_question])
         return maximum_eig_question
 
     def update(self, question, answer):
         self.hyper_dist = self.hyper_dist.update(self.next_rng_key(), question, answer)
+
+        # Save the answer to the question.
+        self.answers_to_questions[question].append(answer)
 
     def save_graph(self):
         self.previous_hyper_dist_graphs.append(self.hyper_dist.graph())
 
     def __repr__(self):
         return str(self.hyper_dist)
-
-def step(state, get_answer: Callable[[Question], float]) -> None:
-    'DEBUG'; start = time.time()
-    question = state.next_question()
-    if question is None:
-        print("No more questions to ask!")
-        return
-    'DEBUG'; print("next_question took", time.time() - start)
-    
-    answer = get_answer(question)
-    state.save_graph() # For visual comparison.
-    state.update(question, answer)
 
 class Priors:
     @staticmethod
@@ -290,29 +351,57 @@ class Priors:
         
         loc = low
         while loc <= high:
-            result.append(
-                (Normal(loc=loc, scale=scale), 1 / n)
-            )
+            result.append((Normal(loc=loc, scale=scale), 1 / n))
             loc += step
 
         return result
 
     @staticmethod
     def everything(low, high):
-        return [
-            (Uniform(low=low, high=high), 1/2),
+        delta = high - low
+        scale_1_normals = [
+            (Normal(loc=low + 0*delta, scale=1), 1/33),
+            (Normal(loc=low + (1/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (2/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (3/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (4/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (5/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (6/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (7/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (8/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (9/10)*delta, scale=1), 1/33),
+            (Normal(loc=low + (10/10)*delta, scale=1), 1/33),
+        ]
+        scale_2_normals = [
+            (Normal(loc=low + 0*delta, scale=2), 1/33),
+            (Normal(loc=low + (1/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (2/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (3/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (4/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (5/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (6/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (7/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (8/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (9/10)*delta, scale=2), 1/33),
+            (Normal(loc=low + (10/10)*delta, scale=2), 1/33),
+        ]
 
-            (Normal(loc=low + 0*(high-low)/5, scale=1), 1/12),
-            (Normal(loc=low + 1*(high-low)/5, scale=1), 1/12),
-            (Normal(loc=low + 2*(high-low)/5, scale=1), 1/12),
-            (Normal(loc=low + 3*(high-low)/5, scale=1), 1/12),
-            (Normal(loc=low + 4*(high-low)/5, scale=1), 1/12),
-            (Normal(loc=low + 5*(high-low)/5, scale=1), 1/12),
+        return [
+            (Uniform(low=low, high=high), 1/3),
+            *scale_1_normals,
+            *scale_2_normals,
         ]
 
 def qa_loop(state):
     while True:
-        print(f"Distribution weights: {state}")
+        print()
+        print("Here's my current state of mind:")
+        # Print the distributions in descending order of likelihood.
+        for d, w in sorted(state.hyper_dist.distributions_and_weights, key=lambda t: -t[1]):
+            # Skip 'dead' distributions.
+            if w == 0:
+                continue
+            print("Distribution:", d, "Weight:", w)
         state.plot_current_vs_previous_distributions()
         print()
 
@@ -322,17 +411,19 @@ def qa_loop(state):
             print(f"With probability >= {threshold}, I guess you're thinking of: ", most_likely_distribution)
             break
         
-        step(state, get_answer=lambda question: question.ask())
+        state.step(get_answer=lambda question: question.ask())
 
 if __name__ == "__main__":
     low = 0#int(input("What is the lowest value you want to consider? (Round to an integer.)\n"))
     high = 10#int(input("What is the highest value you want to consider? (Round to an integer.)\n"))
 
     distributions_and_weights = Priors.everything(low, high)
+    'DEBUG'; print("Weights add to", sum(w for d, w in distributions_and_weights))
     questions = [
         *[IntervalQuestion(pivot) for pivot in range(low, high)],
         SampleQuestion(),
         *[InverseIntervalQuestion(percentile * 0.01) for percentile in range(0, 100 + 1, 10)],
+        # *[ComparingValuesQuestion(value_1, value_2) for value_1, value_2 in zip(range(low, high), range(low+1, high+1))]
     ]
     state = State(HyperDistribution(low, high, Priors.everything(low, high)), questions)
 

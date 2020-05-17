@@ -3,7 +3,7 @@ import re
 import random
 
 import jax
-from elicit import State, HyperDistribution, Normal, Uniform, IntervalQuestion, InverseIntervalQuestion, step
+from elicit import State, HyperDistribution, Normal, Uniform, IntervalQuestion, InverseIntervalQuestion, ComparingValuesQuestion
 
 class IntegrationTests(unittest.TestCase):
     def test_im_thinking_of_a_uniform_distribution(self):
@@ -25,7 +25,7 @@ class IntegrationTests(unittest.TestCase):
             return float(number_string) / high
 
         for _ in range(len(questions)):
-            step(state, answer_according_to_uniform)
+            state.step(answer_according_to_uniform)
             'DEBUG'; print(state.hyper_dist.distributions_and_weights)
 
         [(_, weight_on_uniform), (_, weight_on_normal)] = state.hyper_dist.distributions_and_weights
@@ -56,6 +56,20 @@ class QuestionTests(unittest.TestCase):
             question.sample_answer(rng_key, distribution),
             0.06,
             places=2
+        )
+
+    def test_comparing_values_question(self):
+        question = ComparingValuesQuestion(1, 2) # Value 1 is ___ times more likely than value 2?
+        distribution = Uniform(low=0, high=10)
+        rng_key = jax.random.PRNGKey(0)
+
+        self.assertAlmostEqual(
+            question.log_prob(rng_key, distribution, '1'),
+            0,
+        )
+        self.assertAlmostEqual(
+            question.sample_answer(rng_key, distribution),
+            1,
         )
 
 if __name__ == "__main__":

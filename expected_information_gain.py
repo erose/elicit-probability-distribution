@@ -1,4 +1,5 @@
 import math
+import random
 import time
 
 import jax
@@ -14,32 +15,34 @@ def kl_divergence(P: "HyperDistribution", Q: "HyperDistribution"):
         kl += p * math.log(p / q)
     return kl
 
-def expected_information_gain(rng_key, hyper_dist, question) -> float:
+def expected_information_gain(rng_key, hyper_dist, question, previous_answers) -> float:
     """
     Expected information gain of asking the given question in the current state.
     """
-    num_samples = 100
+    num_samples = 10
     info_gains = []
     for _ in range(num_samples):
-        start = time.time()
-
         dist_key, answer_key, update_key, rng_key = jax.random.split(rng_key, 4)
+        
         # Suppose the true distribution is this
         dist = hyper_dist.sample(dist_key)
-        # 'DEBUG'; print("After hyper_dist.sample: ", time.time() - start)
 
-        # Then what answer do I expect?
-        answer = question.sample_answer(answer_key, dist)
-        # 'DEBUG'; print("After question.sample_answer: ", time.time() - start)
+        # Then what answer do I expect? If this question has already been answered, have a pretty
+        # high prior that the answer will be the same as the last time it was asked. And if it's
+        # been answered twice, assume the answer will be the same as the last time it was asked.
+        human_responds_same_prior = 0.9
+        if len(previous_answers) > 1:
+            answer = previous_answers[-1]
+        if len(previous_answers) > 0 and random.random() < human_responds_same_prior:
+            answer = previous_answers[-1]
+        else:
+            answer = question.sample_answer(answer_key, dist)
 
         # Given that answer, what's my new posterior on distributions?
         hyper_posterior = hyper_dist.update(update_key, question, answer)
-        # 'DEBUG'; print("After hyper_dist.update: ", time.time() - start)
 
         # How much information have I gained from asking this question?
         info_gain = kl_divergence(hyper_posterior, hyper_dist)
         info_gains.append(info_gain)
-
-        # 'DEBUG'; print("Overall: ", time.time() - start)
     
     return sum(info_gains) / len(info_gains)
