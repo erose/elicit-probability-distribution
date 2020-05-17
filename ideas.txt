@@ -2,8 +2,6 @@
 - Ask smarter questions:
   - What if we just did expected information gain again? What's wrong with that?
   - Employ a heuristic for what to ask based on interval questions asked before?
-- We could speed up EIG by computing question.true_frac(distribution) for each distribution *once*. Really, just once at the beginning and then we're done.
-- More question types.
 
 *****
 

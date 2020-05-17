@@ -9,10 +9,12 @@ def kl_divergence(P: "HyperDistribution", Q: "HyperDistribution"):
     # FIXME: Should apply to arbitrary discrete distributions
     kl = 0.0
     for (p, q) in zip(P.weights(), Q.weights()):
+        if p == 0:
+            continue
         kl += p * math.log(p / q)
     return kl
 
-def eig(rng_key, hyper_dist, question) -> float:
+def expected_information_gain(rng_key, hyper_dist, question) -> float:
     """
     Expected information gain of asking the given question in the current state.
     """

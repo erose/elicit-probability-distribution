@@ -1,17 +1,20 @@
 import unittest
 import re
 import random
-from elicit import State, HyperDistribution, Normal, Uniform, step
 
-class TestElicit(unittest.TestCase):
+import jax
+from elicit import State, HyperDistribution, Normal, Uniform, IntervalQuestion, InverseIntervalQuestion, step
+
+class IntegrationTests(unittest.TestCase):
     def test_im_thinking_of_a_uniform_distribution(self):
-        random.seed(0) # We use randomness to choose which questions to ask.
-
+        low = 0
+        high = 10
         distributions_and_weights = [
-            (Uniform(low=0, high=10), 0.5),
-            (Normal(loc=5, scale=1), 0.5),
+            (Uniform(low=low, high=high), 0.5),
+            (Normal(loc=(low+high)/2, scale=1), 0.5),
         ]
-        state = State(HyperDistribution(0, 10, distributions_and_weights))
+        questions = [IntervalQuestion(pivot) for pivot in range(low, high)]
+        state = State(HyperDistribution(low, high, distributions_and_weights), questions)
 
         def answer_according_to_uniform(question) -> float:
             pattern = r'How likely is it that the value is < (.*?)\?'
@@ -19,13 +22,41 @@ class TestElicit(unittest.TestCase):
 
             # e.g. the question is "how likely... > 5" and we want to answer "0.5" since we have a
             # uniform distribution over the space.
-            return float(number_string) / 10.0
+            return float(number_string) / high
 
-        for _ in range(10):
+        for _ in range(len(questions)):
             step(state, answer_according_to_uniform)
+            'DEBUG'; print(state.hyper_dist.distributions_and_weights)
 
         [(_, weight_on_uniform), (_, weight_on_normal)] = state.hyper_dist.distributions_and_weights
-        self.assertGreater(weight_on_uniform, 0.8)
+        self.assertGreater(weight_on_uniform, 0.65)
+
+class QuestionTests(unittest.TestCase):
+    def test_interval_question(self):
+        question = IntervalQuestion(0) # How likely is the value to be less than zero?
+        distribution = Normal(loc=0, scale=1)
+        rng_key = jax.random.PRNGKey(0)
+
+        self.assertAlmostEqual(
+            question.log_prob(rng_key, distribution, '1'),
+            -0.3025,
+        )
+
+    def test_inverse_interval_question(self):
+        question = InverseIntervalQuestion(0.5) # What's the 50th percentile value?
+        distribution = Normal(loc=0, scale=1)
+        rng_key = jax.random.PRNGKey(0)
+
+        self.assertAlmostEqual(
+            question.log_prob(rng_key, distribution, '1000'),
+            -0.25,
+        )
+
+        self.assertAlmostEqual(
+            question.sample_answer(rng_key, distribution),
+            0.06,
+            places=2
+        )
 
 if __name__ == "__main__":
     unittest.main()
